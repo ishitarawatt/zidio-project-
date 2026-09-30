@@ -21,10 +21,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/**
- * Owns the work-order lifecycle. This is the one place the state machine is
- * defined and enforced -- the UI is never trusted as the source of truth.
- */
 @Service
 @RequiredArgsConstructor
 public class WorkOrderService {
@@ -38,19 +34,17 @@ public class WorkOrderService {
     private final PartUsageRepository partUsageRepository;
     private final TimeLogRepository timeLogRepository;
 
-    // Guarded transition table: current status -> allowed next statuses.
     private static final Map<WorkOrderStatus, Set<WorkOrderStatus>> TRANSITIONS = new EnumMap<>(WorkOrderStatus.class);
     static {
         TRANSITIONS.put(WorkOrderStatus.NEW, Set.of(WorkOrderStatus.ASSIGNED, WorkOrderStatus.CANCELLED));
         TRANSITIONS.put(WorkOrderStatus.ASSIGNED, Set.of(WorkOrderStatus.IN_PROGRESS, WorkOrderStatus.CANCELLED));
         TRANSITIONS.put(WorkOrderStatus.IN_PROGRESS, Set.of(WorkOrderStatus.ON_HOLD, WorkOrderStatus.COMPLETED));
         TRANSITIONS.put(WorkOrderStatus.ON_HOLD, Set.of(WorkOrderStatus.IN_PROGRESS));
-        TRANSITIONS.put(WorkOrderStatus.COMPLETED, Set.of(WorkOrderStatus.CLOSED, WorkOrderStatus.IN_PROGRESS)); // reopen
+        TRANSITIONS.put(WorkOrderStatus.COMPLETED, Set.of(WorkOrderStatus.CLOSED, WorkOrderStatus.IN_PROGRESS));
         TRANSITIONS.put(WorkOrderStatus.CLOSED, Set.of());
         TRANSITIONS.put(WorkOrderStatus.CANCELLED, Set.of());
     }
 
-    // Which role is allowed to perform each transition (by target status).
     private static final Map<WorkOrderStatus, Set<Role>> TRANSITION_ROLES = new EnumMap<>(WorkOrderStatus.class);
     static {
         TRANSITION_ROLES.put(WorkOrderStatus.ASSIGNED, Set.of(Role.DISPATCHER, Role.MANAGER));
@@ -68,30 +62,31 @@ public class WorkOrderService {
             Priority.LOW, Duration.ofHours(168)
     );
 
-    // ---------- reads ----------
-
+    @Transactional(readOnly = true)
     public Page<WorkOrder> list(Pageable pageable) {
         return workOrderRepository.findAll(pageable);
     }
 
+    @Transactional(readOnly = true)
     public Page<WorkOrder> listForCustomer(Long customerId, Pageable pageable) {
         return workOrderRepository.findByCustomerId(customerId, pageable);
     }
 
+    @Transactional(readOnly = true)
     public Page<WorkOrder> listForTechnician(Long technicianId, Pageable pageable) {
         return workOrderRepository.findByAssignedToId(technicianId, pageable);
     }
 
+    @Transactional(readOnly = true)
     public WorkOrder get(Long id) {
         return workOrderRepository.findById(id)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Work order not found"));
     }
 
+    @Transactional(readOnly = true)
     public List<WorkOrderStatusHistory> history(Long workOrderId) {
         return historyRepository.findByWorkOrderIdOrderByChangedAtAsc(workOrderId);
     }
-
-    // ---------- writes ----------
 
     @Transactional
     public WorkOrder create(CreateWorkOrderRequest req) {
@@ -162,7 +157,6 @@ public class WorkOrderService {
                     "Your role cannot perform this transition");
         }
 
-        // Only the assigned technician (or a manager) may move IN_PROGRESS/ON_HOLD/COMPLETED.
         if ((toStatus == WorkOrderStatus.IN_PROGRESS || toStatus == WorkOrderStatus.ON_HOLD
                 || toStatus == WorkOrderStatus.COMPLETED) && !currentUserHasAnyRole(Set.of(Role.MANAGER))) {
             User current = currentUser();
@@ -188,7 +182,6 @@ public class WorkOrderService {
             throw new ApiException(HttpStatus.CONFLICT, "Insufficient stock for part " + part.getSku());
         }
 
-        // Stock decrement + usage row happen in the same transaction.
         part.setStockQty(part.getStockQty() - qty);
         partRepository.save(part);
 
@@ -212,6 +205,7 @@ public class WorkOrderService {
         timeLogRepository.save(log);
     }
 
+    @Transactional(readOnly = true)
     public DashboardSummaryDto summary() {
         Map<String, Long> counts = new java.util.LinkedHashMap<>();
         long total = 0;
@@ -245,8 +239,6 @@ public class WorkOrderService {
 
         return new DashboardSummaryDto(counts, overdue, Math.round(slaCompliance * 10.0) / 10.0, byTechnician, bySite);
     }
-
-    // ---------- helpers ----------
 
     private void writeHistory(WorkOrder wo, WorkOrderStatus from, WorkOrderStatus to, String note) {
         WorkOrderStatusHistory h = new WorkOrderStatusHistory();
